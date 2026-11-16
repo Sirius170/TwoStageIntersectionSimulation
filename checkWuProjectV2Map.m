@@ -16,7 +16,10 @@ for approach = 1:4
         secondId = map.twoStage.secondPathIds(approach,slot);
         first = map.paths(firstId);
         second = map.paths(secondId);
+
+        % 計算第一段終點與第二段起點的距離誤差
         endpointErrors(approach,slot) = norm(first.xy(end,:)-second.xy(1,:));
+        
         assert(first.stage==1 && second.stage==2);
         assert(first.waitBox==second.waitBox,'Waiting-box ID mismatch.');
         assert(first.slot==second.slot,'Waiting-box slot mismatch.');

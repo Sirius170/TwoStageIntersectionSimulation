@@ -32,6 +32,8 @@ assert(any(strcmpi(carFollowingModel,{'Gipps','IDM'})), ...
     'carFollowingModel must be Gipps or IDM.');
 
 root = fileparts(mfilename('fullpath'));
+
+%% 讀取道路資料，每秒更新 20 次
 D = load(fullfile(root,'intersectionMap_v3_twoStage_v4.mat'),'map');
 map = D.map;
 dt = 0.05;
@@ -54,8 +56,9 @@ nextArrival = 1;
 vehicles = emptyVehicleArray();
 nextId = 1;
 
-% Wu phase meanings: 0 all-red, 1 EW straight, 2 EW protected left,
-% 3 NS straight, 4 NS protected left. 5/6 are added yellow-clearance states.
+% 0 all-red,
+% 1 EW straight, 2 EW protected left, 5  EW yellow-clearance states
+% 3 NS straight, 4 NS protected left, 6  NS yellow-clearance states
 signalPhases = [1 5 0 2 5 0 3 6 0 4 6 0];
 signalDurations = [phaseSeconds(1),yellowSeconds,allRedSeconds, ...
                    phaseSeconds(2),yellowSeconds,allRedSeconds, ...
@@ -202,6 +205,8 @@ while t <= simulationSeconds && isgraphics(fig)
         vehicles(k).acceleration = (newSpeed-vehicles(k).speed)/dt;
         vehicles(k).acceleration = min(max(vehicles(k).acceleration,-4.5),3.0);
         newSpeed = max(0,vehicles(k).speed + vehicles(k).acceleration*dt);
+       
+        %% 利用速度與時間更新車輛在路徑上的行駛距離
         vehicles(k).distance = min(p.length,vehicles(k).distance + ...
             0.5*(vehicles(k).speed+newSpeed)*dt);
         vehicles(k).speed = newSpeed;
@@ -274,6 +279,7 @@ fprintf('Two-stage left turns completed: %d | Total box wait: %.2f s\n', ...
 fprintf('Accumulated stopped time: %.2f s\n',totalWait);
 fprintf('Still active at stop time: %d\n',result.remainingActive);
 
+    %% 根據 Poisson 車流模型安排車輛進入路口
     function arrivalsOut = makeArrivals()
         arrivalsOut = struct('time',{},'approach',{},'kind',{}, ...
             'movement',{},'pathId',{},'nextPathId',{},'slot',{});
