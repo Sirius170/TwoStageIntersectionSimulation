@@ -1,7 +1,9 @@
 function report = checkWuProjectV2Map()
 % Static interface check for Wu's road map and two-stage motorcycle routes.
-root = fileparts(mfilename('fullpath'));
-D = load(fullfile(root,'intersectionMap_v3_twoStage_v4.mat'),'map');
+projectRoot = getWuProjectRoot();
+mapFile = fullfile(projectRoot,'04_道路資料','intersectionMap_v3_twoStage_v4.mat');
+assert(isfile(mapFile),sprintf('找不到道路資料檔：%s',mapFile));
+D = load(mapFile,'map');
 map = D.map;
 
 assert(numel(map.paths)==30,'Expected 30 paths.');

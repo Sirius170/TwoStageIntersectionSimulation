@@ -4,8 +4,8 @@ clearvars;
 close all;
 clc;
 
-root = fileparts(mfilename('fullpath'));
-addpath(root);
+projectRoot = fileparts(fileparts(mfilename('fullpath')));
+addpath(genpath(projectRoot));
 
 % [東西直行, 東西保護左轉, 南北直行, 南北保護左轉] seconds
 phaseSeconds = [20 8 20 8];     % 四種號誌相位秒數

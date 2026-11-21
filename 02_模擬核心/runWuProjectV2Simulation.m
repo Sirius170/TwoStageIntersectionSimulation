@@ -31,10 +31,12 @@ assert(motorcycleShare>=0 && motorcycleShare<=1,'motorcycleShare must be in [0,1
 assert(any(strcmpi(carFollowingModel,{'Gipps','IDM'})), ...
     'carFollowingModel must be Gipps or IDM.');
 
-root = fileparts(mfilename('fullpath'));
+projectRoot = getWuProjectRoot();
 
 %% 讀取道路資料，每秒更新 20 次
-D = load(fullfile(root,'intersectionMap_v3_twoStage_v4.mat'),'map');
+mapFile = fullfile(projectRoot,'04_道路資料','intersectionMap_v3_twoStage_v4.mat');
+assert(isfile(mapFile),sprintf('找不到道路資料檔：%s',mapFile));
+D = load(mapFile,'map');
 map = D.map;
 dt = 0.05;
 yellowSeconds = 3.0;
