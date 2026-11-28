@@ -1,0 +1,68 @@
+本次程式修改紀錄
+================
+
+基準檔案：Wu_Project_v2(1).zip
+整合目標：Wu V4 模擬核心 + PSO + SA
+固定週期：78 秒
+
+A. 修改摘要
+-----------
+1. PSO/SA 不再呼叫 START_HERE2.m，改呼叫 evaluateSignalPlan.m。
+2. 新增 getSignalOptimizationConfig.m 作為共同參數來源。
+3. 固定週期下四相位綠燈總和固定為 60 秒。
+4. PSO 保留連續值搜尋；三個連續變數決定前三相位，第四相位由總和推導。
+5. SA 保留整數搜尋、溫度排程與接受機制；鄰域改為相位間整數秒數轉移。
+6. 新核心新增 enableVisualization，最佳化評估關閉繪圖但保留模擬運算。
+7. evaluateSignalPlan 保存/還原全域 RNG，避免模擬核心 rng(7) 改變最佳化隨機序列。
+8. 預留行人等待時間欄位，現階段不納入 Cost。
+
+B. 逐檔修改
+-----------
+02_模擬核心/runWuProjectV2Simulation.m
+- 函數新增第 9 個輸入 enableVisualization，預設 true。
+- false 時不建立道路視窗、不更新車輛圖形、不執行 drawnow。
+- 模擬主迴圈在無視覺化模式仍持續運作。
+- 新增 result.phaseSeconds、result.cycleDurationSeconds、
+  result.visualizationEnabled。
+- 車流、道路、汽機車移動、號誌判斷、兩段式左轉及等待時間邏輯未刻意更動。
+
+04_評分與計算/getSignalOptimizationConfig.m [新增]
+- 集中設定 78 秒週期、黃燈/全紅、綠燈總秒數、上下界、初始解及模擬參數。
+- cycleMode='fixed'，保留未來擴充變動週期的設定入口。
+
+04_評分與計算/evaluateSignalPlan.m [新增]
+- 驗證輸入四相位綠燈總和為 60 秒、各相位 10 至 30 秒。
+- 呼叫 Wu V4 核心的無視覺化模式。
+- 回傳 totalWaitSeconds 作為目前 Cost。
+- 第二輸出 details 保留 pedestrianWaitSeconds 欄位；目前為 NaN，
+  並標示 pedestrianIncluded=false。
+
+Optimization/PSO/run_pso.m
+- 路徑由腳本位置定位到專案根目錄。
+- 目標函數改為本檔內的 psoObjective，再由它呼叫 evaluateSignalPlan。
+- 搜尋維度由 4 改為 3，是固定總和約束的參數化；PSO 粒子群更新方式不變。
+- 搜尋過程不 round，保留小數秒。
+- 不可行的第四相位使用大懲罰值，避免將不合法號誌方案送入模擬。
+- 保留原本粒子數、迭代數、收斂紀錄與 Excel 匯出方式。
+
+Optimization/SA/run_sa.m
+- 目標函數改為 evaluateSignalPlan。
+- 上下界改為每相位 10 至 30 秒。
+- 鄰域由各維度獨立隨機加減，改為從 donor 相位轉移整數秒到 receiver 相位。
+- 保留總綠燈 60 秒、整數秒、初始溫度 1500、再退火間隔 40、
+  800 次最大評估設定、獨立亂數流與原本 OutputFcn 統計方式。
+
+05_檢查工具/CHECK_OPTIMIZATION_INTEGRATION.m [新增]
+- 驗證基準解與小數解。
+- 驗證不符合固定週期的解會被拒絕。
+- 實際呼叫一次無視覺化模擬，檢查 Cost 與行人預留欄位。
+
+C. 必須知道的差異
+-----------------
+- PSO 搜尋維度變成 3，是因為固定週期的四相位只有 3 個自由度；
+  並非把 PSO 換成其他演算法。
+- SA 鄰域變成相位間轉移，是因為逐維獨立加減會破壞固定週期；
+  SA 的溫度、接受機率與退火排程仍交由 MATLAB simulannealbnd。
+- 目前 Cost 是汽車/機車累積停等時間，不包含行人。
+- 此執行環境沒有 MATLAB/Octave，故未能在此執行 Optimization Toolbox。
+  請先執行 CHECK_OPTIMIZATION_INTEGRATION.m，再分別執行 PSO 與 SA。

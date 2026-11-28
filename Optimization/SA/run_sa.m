@@ -1,0 +1,252 @@
+% run_sa.m
+% SA on the Wu V4 simulation core, with a fixed 78-second signal cycle.
+% The original SA acceptance/annealing mechanism and integer exchange
+% neighborhood are retained. Three independent variables are optimized;
+% the fourth phase is derived to satisfy the fixed-cycle equality exactly.
+clear; clc;
+
+% 1. Project path: resolve from this script, not MATLAB's Current Folder.
+currentFolder = fileparts(mfilename('fullpath'));
+projectRoot = fileparts(fileparts(currentFolder));
+addpath(genpath(projectRoot));
+
+config = getSignalOptimizationConfig();
+
+% 2. Fixed-cycle parameterization.
+% x = [g1 g2 g3], and g4 = 60 - (g1+g2+g3).
+% This removes the equality constraint from the optimizer's coordinates.
+% All four actual green times remain integer-valued during SA proposals.
+numVars = 3;
+lb = config.minGreenSeconds * ones(1,numVars);
+ub = config.maxGreenSeconds * ones(1,numVars);
+initPhases = config.initialPhases;
+initX = initPhases(1:3);
+maxIter = 40;
+popSize = 20;
+initTemp = 1500;
+reannealInt = 40;
+totalFEs = maxIter*popSize;
+paramTag = ['_T',num2str(initTemp)];
+
+% Confirm that the starting plan is feasible before starting SA.
+[~,initFeasible] = decodeSAPlan(initX,config);
+assert(initFeasible,'run_sa:InvalidInitialPlan', ...
+    'Initial SA plan does not satisfy the fixed-cycle constraints.');
+
+global sa_history;
+sa_history = [];
+global sa_builtin_stream;
+sa_builtin_stream = RandStream('mt19937ar','Seed',101);
+
+% 3. Keep MATLAB simulannealbnd, its temperature schedule, acceptance
+% probability, reannealing interval, and stopping/evaluation settings.
+% Only the coordinate representation and the custom neighbor adapter change.
+options = optimoptions('simulannealbnd', ...
+    'InitialTemperature',initTemp, ...
+    'AnnealingFcn',@(optimValues,problem) ...
+        saIntegerNeighbor(optimValues,problem,initTemp,config), ...
+    'ReannealInterval',reannealInt, ...
+    'MaxIterations',totalFEs, ...
+    'MaxFunctionEvaluations',totalFEs, ...
+    'MaxStallIterations',totalFEs, ...
+    'Display','off', ...
+    'OutputFcn',@(opt,optimValues,flag) ...
+        saOutput(opt,optimValues,flag,popSize,maxIter));
+
+disp('開始執行 SA 最佳化（Wu V4，固定週期 78 秒）...');
+totalTimer = tic;
+[bestX,optimizerBestCost] = simulannealbnd( ...
+    @saObjective,initX,lb,ub,options);
+
+% Decode the three optimizer coordinates into the four actual phases.
+bestX = round(bestX(:)');
+[bestPhases,isFeasible] = decodeSAPlan(bestX,config);
+if ~isFeasible
+    error('run_sa:InvalidBestPlan', ...
+        'SA returned a plan that violates the fixed-cycle constraints.');
+end
+
+bestCost = evaluateSignalPlan(bestPhases);
+initialCost = evaluateSignalPlan(initPhases);
+totalElapsed = toc(totalTimer);
+
+% 4. Results
+disp('============= SA 最佳化完成 =============');
+disp(['最佳號誌秒數 [EW直行 EW左轉 NS直行 NS左轉]: ',num2str(bestPhases)]);
+disp(['該組合的總停等時間 (Cost): ',num2str(bestCost),' 秒']);
+disp(['固定週期: ',num2str(config.cycleSeconds),' 秒']);
+disp(['SA 最佳目標值（搜尋結束時）: ',num2str(optimizerBestCost)]);
+disp(['總執行時間: ',num2str(totalElapsed,'%.2f'),' 秒']);
+
+disp(newline);
+disp('----------------------------------------');
+disp(['初始號誌 [15 15 15 15] 總停等時間: ',num2str(initialCost),' 秒']);
+if abs(initialCost)>eps
+    improvement = ((initialCost-bestCost)/initialCost)*100;
+else
+    improvement = NaN;
+end
+disp(['總停等時間改善比例: ',num2str(improvement,'%.2f'),' %']);
+disp('========================================');
+
+% 5. Export convergence history and elapsed time.
+if ~isempty(sa_history)
+    historyTable = table( ...
+        sa_history(:,1),sa_history(:,2), ...
+        repmat(totalElapsed,size(sa_history,1),1), ...
+        'VariableNames',{'Iteration','BestCost','TotalElapsedSeconds'});
+
+    baseName = ['SA_',num2str(maxIter),paramTag,'_Convergence_Curve'];
+    runNum = 1;
+    reservePath = '';
+    while true
+        runTag = sprintf('_Run%03d',runNum);
+        fileName = [baseName,runTag,'.xlsx'];
+        savePath = fullfile(currentFolder,fileName);
+        reservePath = fullfile(currentFolder,[baseName,runTag,'.reserve']);
+        if ~exist(savePath,'file')
+            reserveFile = javaObject('java.io.File',reservePath);
+            if reserveFile.createNewFile(), break; end
+        end
+        runNum = runNum+1;
+    end
+
+    fprintf('本次模擬編號：第 %d 次\n',runNum);
+    try
+        writetable(historyTable,savePath);
+        disp(['收斂曲線已匯出至： ',savePath]);
+        if exist(reservePath,'file'), delete(reservePath); end
+    catch ME
+        if exist(reservePath,'file'), delete(reservePath); end
+        rethrow(ME);
+    end
+end
+
+% -------------------------------------------------------------------------
+% SA objective adapter.
+% For feasible x, evaluate the decoded 4-phase plan.
+% During MATLAB's internal finite-difference/reannealing probes, x may map
+% to an infeasible fourth phase. Return a finite penalty instead of throwing
+% an error, so simulannealbnd can complete its internal calculations.
+% Normal SA proposals are generated by the feasible exchange neighbor below.
+% -------------------------------------------------------------------------
+function cost = saObjective(x)
+config = getSignalOptimizationConfig();
+[phasePlan,isFeasible,violation] = decodeSAPlan(x,config);
+if ~isFeasible
+    cost = 1e9 + 1e7*(violation^2);
+    return;
+end
+cost = evaluateSignalPlan(phasePlan);
+end
+
+function [phasePlan,isFeasible,violation] = decodeSAPlan(x,config)
+x = reshape(x,1,[]);
+if numel(x) ~= 3 || any(~isfinite(x))
+    phasePlan = [NaN NaN NaN NaN];
+    isFeasible = false;
+    violation = 1e6; % Keep the penalty finite for solver internals.
+    return;
+end
+phasePlan = [x,config.totalGreenSeconds-sum(x)];
+lowViolation = max(config.minGreenSeconds-phasePlan,0);
+highViolation = max(phasePlan-config.maxGreenSeconds,0);
+violation = sum(lowViolation+highViolation);
+isFeasible = all(phasePlan>=config.minGreenSeconds-1e-8) && ...
+    all(phasePlan<=config.maxGreenSeconds+1e-8) && ...
+    abs(sum(phasePlan)-config.totalGreenSeconds)<=1e-8;
+if isFeasible
+    % Preserve the equality exactly up to floating-point arithmetic.
+    phasePlan(4) = config.totalGreenSeconds-sum(phasePlan(1:3));
+end
+end
+
+% -------------------------------------------------------------------------
+% Integer exchange neighborhood in the actual FOUR-phase space.
+% The optimizer stores only the first three phases; phase 4 is derived.
+% Transfer seconds between any donor/receiver pair, then return x(1:3).
+% This preserves the original integer exchange concept and total green time.
+% -------------------------------------------------------------------------
+function newx = saIntegerNeighbor(optimValues,problem,initTemp,config)
+global sa_builtin_stream;
+
+currentX = round(optimValues.x(:)');
+[currentPlan,isFeasible] = decodeSAPlan(currentX,config);
+if ~isFeasible
+    % This is defensive only; normal annealing proposals remain feasible.
+    currentX = config.initialPhases(1:3);
+    [currentPlan,isFeasible] = decodeSAPlan(currentX,config);
+    if ~isFeasible
+        error('run_sa:InvalidCurrentPlan', ...
+            'SA current point cannot be decoded to a feasible signal plan.');
+    end
+end
+
+% Keep the original temperature-dependent maximum transfer size.
+ratio = min(1,max(0.2, ...
+    mean(optimValues.temperature(:))/initTemp));
+maxStep = max(3,round(15*ratio));
+
+lbPhase = config.minGreenSeconds*ones(1,config.phaseCount);
+ubPhase = config.maxGreenSeconds*ones(1,config.phaseCount);
+[donors,receivers] = findTransferPairs(currentPlan,lbPhase,ubPhase);
+if isempty(donors)
+    newx = currentX;
+    return;
+end
+
+pairIndex = randi(sa_builtin_stream,numel(donors));
+donor = donors(pairIndex);
+receiver = receivers(pairIndex);
+availableFromDonor = currentPlan(donor)-lbPhase(donor);
+availableAtReceiver = ubPhase(receiver)-currentPlan(receiver);
+maxTransfer = min([maxStep,availableFromDonor,availableAtReceiver]);
+transfer = randi(sa_builtin_stream,[1,maxTransfer]);
+
+newPlan = currentPlan;
+newPlan(donor) = newPlan(donor)-transfer;
+newPlan(receiver) = newPlan(receiver)+transfer;
+
+assert(sum(newPlan)==config.totalGreenSeconds, ...
+    'SA neighborhood changed the total green time.');
+assert(all(newPlan>=lbPhase) && all(newPlan<=ubPhase), ...
+    'SA neighborhood generated a phase outside its bounds.');
+
+% Only the first three phase values are optimizer coordinates.
+newx = newPlan(1:3);
+end
+
+function [donors,receivers] = findTransferPairs(x,lb,ub)
+donors = [];
+receivers = [];
+for i = 1:numel(x)
+    if x(i)<=lb(i), continue; end
+    for j = 1:numel(x)
+        if i~=j && x(j)<ub(j)
+            donors(end+1) = i; %#ok<AGROW>
+            receivers(end+1) = j; %#ok<AGROW>
+        end
+    end
+end
+end
+
+% --- Original convergence listener retained ---
+function [stop,options,optchanged] = saOutput( ...
+    options,optimValues,flag,popSize,maxIter)
+global sa_history;
+stop = false;
+optchanged = false;
+
+if strcmp(flag,'iter') && mod(optimValues.funccount,popSize)==0
+    currentGen = optimValues.funccount/popSize;
+    if currentGen<=maxIter && ...
+            (isempty(sa_history) || sa_history(end,1)<currentGen)
+        sa_history = [sa_history;currentGen,optimValues.bestfval];
+        fprintf('代數 (Iteration): %2d | 目前最佳總停等時間: %7.2f 秒\n', ...
+            currentGen,optimValues.bestfval);
+    end
+    if currentGen>=maxIter
+        stop = true;
+    end
+end
+end

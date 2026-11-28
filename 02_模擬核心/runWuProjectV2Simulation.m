@@ -1,8 +1,9 @@
-function result = runWuProjectV2Simulation(phaseSeconds, simulationSeconds, inflow, turnWeights, playbackSpeed, motorcycleShare, showPaths, carFollowingModel)
+function result = runWuProjectV2Simulation(phaseSeconds, simulationSeconds, inflow, turnWeights, playbackSpeed, motorcycleShare, showPaths, carFollowingModel, enableVisualization)
 % RUNWUPROJECTV2SIMULATION
 % Integrates Project_v2 vehicle behavior with Wu V4 road geometry.
 %
 % phaseSeconds = [EW_through EW_protected_left NS_through NS_protected_left]
+% enableVisualization = true/false; false runs the same traffic simulation without graphics
 % Signal sequence includes yellow and all-red clearance:
 % 1 -> 5(EW yellow) -> 0 -> 2 -> 5 -> 0 ->
 % 3 -> 6(NS yellow) -> 0 -> 4 -> 6 -> 0 -> repeat.
@@ -21,6 +22,9 @@ if nargin < 5 || isempty(playbackSpeed), playbackSpeed = 0; end
 if nargin < 6 || isempty(motorcycleShare), motorcycleShare = 0.35; end
 if nargin < 7 || isempty(showPaths), showPaths = false; end
 if nargin < 8 || isempty(carFollowingModel), carFollowingModel = 'Gipps'; end
+if nargin < 9 || isempty(enableVisualization), enableVisualization = true; end
+validateattributes(enableVisualization,{'logical','numeric'},{'scalar'});
+enableVisualization = logical(enableVisualization);
 
 validateattributes(phaseSeconds,{'numeric'},{'vector','numel',4,'positive','finite'});
 validateattributes(simulationSeconds,{'numeric'},{'scalar','positive','finite'});
@@ -50,7 +54,17 @@ assert(isequal(size(map.twoStage.secondPathIds),[4 2]));
 assert(all([map.paths(15:22).stage]==1));
 assert(all([map.paths(23:30).stage]==2));
 
-ui = showRoadV4(map,showPaths);
+if enableVisualization
+    ui = showRoadV4(map,showPaths);
+    fig = ui.fig;
+    ax = ui.ax;
+else
+    % Headless mode: skip figure and vehicle graphics only.
+    % Vehicle generation, signals, movement and waiting-time accounting are unchanged.
+    ui = struct();
+    fig = [];
+    ax = [];
+end
 
 % Build a Poisson arrival schedule, using Project_v2's arrival-process idea.
 arrivals = makeArrivals();
@@ -78,14 +92,14 @@ twoStageWaitTotal = 0;
 twoStageCompleted = 0;
 phaseLog = zeros(0,2);
 
-fig = ui.fig;
-ax = ui.ax;
 t = 0;
-while t <= simulationSeconds && isgraphics(fig)
+while t <= simulationSeconds && (~enableVisualization || isgraphics(fig))
     phase = phaseAt(t);
     remaining = phaseRemaining(t);
     if phase ~= lastPhase
-        setRoadLightsV4(ui,phase,remaining);
+        if enableVisualization
+            setRoadLightsV4(ui,phase,remaining);
+        end
         phaseLog(end+1,:) = [t phase]; %#ok<AGROW>
         lastPhase = phase;
     end
@@ -242,21 +256,23 @@ while t <= simulationSeconds && isgraphics(fig)
         end
     end
 
-    % Use Wu's drawing functions for both vehicle types and their orientation.
-    for k = 1:numel(vehicles)
-        if vehicles(k).active
-            vehicles(k).drawHandle = drawRoadVehicleV4(ui,map, ...
-                vehicles(k).pathId,vehicles(k).distance, ...
-                vehicles(k).kind,vehicles(k).drawHandle);
-        elseif ~isempty(vehicles(k).drawHandle)
-            deleteVehicleGraphic(vehicles(k).drawHandle);
-            vehicles(k).drawHandle = [];
+    % Graphics are optional. Disabling them does not skip any traffic update.
+    if enableVisualization
+        for k = 1:numel(vehicles)
+            if vehicles(k).active
+                vehicles(k).drawHandle = drawRoadVehicleV4(ui,map, ...
+                    vehicles(k).pathId,vehicles(k).distance, ...
+                    vehicles(k).kind,vehicles(k).drawHandle);
+            elseif ~isempty(vehicles(k).drawHandle)
+                deleteVehicleGraphic(vehicles(k).drawHandle);
+                vehicles(k).drawHandle = [];
+            end
         end
+        title(ax,sprintf('Project_v2 vehicle logic on Wu V4 road | t = %.1f / %.1f s', ...
+            t,simulationSeconds));
+        drawnow limitrate;
+        if playbackSpeed > 0, pause(dt/playbackSpeed); end
     end
-    title(ax,sprintf('Project_v2 vehicle logic on Wu V4 road | t = %.1f / %.1f s', ...
-        t,simulationSeconds));
-    drawnow limitrate;
-    if playbackSpeed > 0, pause(dt/playbackSpeed); end
     t = t + dt;
 end
 
@@ -268,6 +284,9 @@ result.waitingByApproach = waitingByApproach;
 result.twoStageWaitSeconds = twoStageWaitTotal;
 result.twoStageCompleted = twoStageCompleted;
 result.phaseLog = phaseLog;
+result.phaseSeconds = phaseSeconds(:)';
+result.cycleDurationSeconds = cycleDuration;
+result.visualizationEnabled = enableVisualization;
 result.arrivalsScheduled = numel(arrivals);
 result.arrivalsSpawned = nextId-1;
 result.remainingActive = sum([vehicles.active]);
